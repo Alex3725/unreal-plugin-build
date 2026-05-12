@@ -4,57 +4,49 @@
 
 // ============================================================
 //  DEFINIZIONE CATEGORIA LOG
-//  Va messa UNA SOLA VOLTA in tutto il progetto (nel .cpp).
+//  Va definita UNA SOLA VOLTA in tutto il progetto (nel .cpp).
 //  La dichiarazione (DECLARE_LOG_CATEGORY_EXTERN) è nell'header.
 // ============================================================
 
 /**
  * Definisce la categoria log LogMenuSystemOnline.
- * - Primo parametro:  nome della categoria
- * - Secondo parametro: verbosity di default a runtime (Log = mostra Log/Warning/Error)
- * - Terzo parametro:  verbosity massima compilata (All = compila tutto)
+ * - Secondo parametro: verbosity di default a runtime
+ * - Terzo parametro:   verbosity massima compilata
  */
 DEFINE_LOG_CATEGORY(LogMenuSystemOnline);
 
 
 // ============================================================
-//  IMPLEMENTAZIONE: PrintImpl (privato, usato internamente)
+//  PrintImpl — nucleo condiviso di tutti i metodi pubblici
 // ============================================================
 
 /**
- * @brief Nucleo di tutti i metodi debug.
- *        Scrive su:
- *          1. UE_LOG    (Output Log + file di log su disco)
- *          2. Schermo   (AddOnScreenDebugMessage, solo fuori Shipping)
+ * @brief Scrive il messaggio su:
+ *   1. UE_LOG (sempre attivo, anche in Shipping)
+ *   2. AddOnScreenDebugMessage (solo fuori Shipping)
  *
- * @note  I messaggi a schermo vengono compilati solo se NON siamo in
- *        UE_BUILD_SHIPPING, evitando overhead e testo visibile all'utente finale.
- *        UE_LOG è sempre attivo in tutte le configurazioni (Debug, Development, Shipping)
- *        perché è utile per diagnosticare crash report da build di produzione.
+ * @param Key  -1 = crea sempre un nuovo messaggio a schermo
+ *             >= 0 = sovrascrive lo slot con quel key (comportamento "stato")
  */
 void FDebugUtils::PrintImpl(
 	const FString&      Msg,
 	FColor              Color,
 	float               Duration,
-	ELogVerbosity::Type Verbosity)
+	ELogVerbosity::Type Verbosity,
+	int32               Key)
 {
 	// -------------------------------------------------------
-	// 1. SCRITTURA SU UE_LOG
-	//    Sempre attivo, anche in Shipping.
-	//    I log vengono scritti su:
-	//      - Output Log panel dell'editor
-	//      - File: Saved/Logs/NomeProgetto.log
+	// 1. UE_LOG — sempre attivo in tutte le configurazioni
+	//    Scritto su: Output Log panel + Saved/Logs/NomeProgetto.log
 	// -------------------------------------------------------
 	switch (Verbosity)
 	{
 		case ELogVerbosity::Warning:
 			UE_LOG(LogMenuSystemOnline, Warning, TEXT("%s"), *Msg);
 			break;
-
 		case ELogVerbosity::Error:
 			UE_LOG(LogMenuSystemOnline, Error, TEXT("%s"), *Msg);
 			break;
-
 		case ELogVerbosity::Log:
 		default:
 			UE_LOG(LogMenuSystemOnline, Log, TEXT("%s"), *Msg);
@@ -62,92 +54,100 @@ void FDebugUtils::PrintImpl(
 	}
 
 	// -------------------------------------------------------
-	// 2. MESSAGGIO A SCHERMO
-	//    Compilato solo in configurazioni non-Shipping.
-	//    In Shipping questo blocco viene rimosso dal compilatore
-	//    (zero overhead a runtime in produzione).
+	// 2. Messaggio a schermo — solo fuori da UE_BUILD_SHIPPING
+	//    In Shipping il compilatore rimuove questo blocco completamente.
 	// -------------------------------------------------------
 #if !UE_BUILD_SHIPPING
 	if (GEngine)
 	{
-		// -1 come Key = ogni chiamata crea un messaggio separato
-		// (non sovrascrive messaggi precedenti)
-		GEngine->AddOnScreenDebugMessage(
-			-1,
-			Duration,
-			Color,
-			Msg
-		);
+		GEngine->AddOnScreenDebugMessage(Key, Duration, Color, Msg);
 	}
 #endif // !UE_BUILD_SHIPPING
 }
 
 
 // ============================================================
-//  IMPLEMENTAZIONE: metodi pubblici
+//  METODI PUBBLICI
 // ============================================================
 
-/**
- * @brief Messaggio generico con colore e durata personalizzabili.
- *        Chiama PrintImpl con verbosity Log.
- */
 void FDebugUtils::Log(const FString& Msg, FColor Color, float Duration)
 {
-	PrintImpl(Msg, Color, Duration, ELogVerbosity::Log);
+	PrintImpl(Msg, Color, Duration, ELogVerbosity::Log, -1);
 }
 
-/**
- * @brief Messaggio informativo neutro (ciano/bianco).
- *        Usato per stati, valori correnti, inizializzazioni.
- */
 void FDebugUtils::Info(const FString& Msg, float Duration)
 {
-	PrintImpl(Msg, FColor::Cyan, Duration, ELogVerbosity::Log);
+	PrintImpl(Msg, FColor::Cyan, Duration, ELogVerbosity::Log, -1);
 }
 
-/**
- * @brief Messaggio di successo (verde).
- *        Usato per confermare operazioni completate correttamente.
- */
 void FDebugUtils::Success(const FString& Msg, float Duration)
 {
-	PrintImpl(Msg, FColor::Green, Duration, ELogVerbosity::Log);
+	PrintImpl(Msg, FColor::Green, Duration, ELogVerbosity::Log, -1);
 }
 
-/**
- * @brief Messaggio di avvertimento (giallo).
- *        Usato per situazioni anomale ma recuperabili.
- *        Mappa su UE_LOG Warning per essere filtrabili.
- */
 void FDebugUtils::Warning(const FString& Msg, float Duration)
 {
-	PrintImpl(Msg, FColor::Yellow, Duration, ELogVerbosity::Warning);
+	PrintImpl(Msg, FColor::Yellow, Duration, ELogVerbosity::Warning, -1);
 }
 
-/**
- * @brief Messaggio di errore critico (rosso).
- *        Usato per errori che bloccano il flusso normale.
- *        Mappa su UE_LOG Error per essere filtrabili.
- *        Durata a schermo più lunga (10s) per non perderli.
- */
 void FDebugUtils::Error(const FString& Msg, float Duration)
 {
-	PrintImpl(Msg, FColor::Red, Duration, ELogVerbosity::Error);
+	PrintImpl(Msg, FColor::Red, Duration, ELogVerbosity::Error, -1);
 }
 
 /**
- * @brief Stampa un separatore con titolo di sezione nel log.
- *        Utile per raggruppare visivamente i log nel Output Log.
+ * @brief Messaggio di stato PERSISTENTE con Key fisso.
  *
- *        Esempio output nel log:
- *          ===== [ CREATE SESSION ] =====
+ * Differenza rispetto agli altri metodi:
+ *   - Key fisso (default: 200): sovrascrive il messaggio precedente nello stesso slot
+ *   - Durata più lunga (20s default) per essere visibile durante il caricamento
+ *   - Colore arancione per distinguersi dagli altri messaggi
+ *
+ * Uso tipico:
+ *   FDebugUtils::Status(TEXT("🔍 CERCANDO SESSIONI..."));    // stato 1
+ *   FDebugUtils::Status(TEXT("⚡ CONNESSIONE IN CORSO..."));  // stato 2 (sostituisce 1)
+ *   FDebugUtils::Status(TEXT("🚀 VIAGGIO VERSO LOBBY..."));   // stato 3 (sostituisce 2)
+ *   FDebugUtils::ClearStatus();                               // fine
+ */
+void FDebugUtils::Status(const FString& Msg, int32 Key, float Duration)
+{
+	// Log sempre su UE_LOG per tracciabilità
+	UE_LOG(LogMenuSystemOnline, Log, TEXT("[STATUS] %s"), *Msg);
+
+#if !UE_BUILD_SHIPPING
+	if (GEngine)
+	{
+		// Usa Key fisso: sovrascrive il messaggio precedente nello stesso slot
+		GEngine->AddOnScreenDebugMessage(Key, Duration, FColor::Orange, Msg);
+	}
+#endif // !UE_BUILD_SHIPPING
+}
+
+/**
+ * @brief Cancella il messaggio di stato dalla schermata.
+ *        Chiama questo quando il flusso è terminato (join completato, errore, timeout).
+ */
+void FDebugUtils::ClearStatus(int32 Key)
+{
+	UE_LOG(LogMenuSystemOnline, Log, TEXT("[STATUS] Cleared (Key=%d)"), Key);
+
+#if !UE_BUILD_SHIPPING
+	if (GEngine)
+	{
+		// Sovrascrive il messaggio con stringa vuota e durata minima
+		// (non esiste una API "remove by key" diretta in UE5)
+		GEngine->AddOnScreenDebugMessage(Key, 0.001f, FColor::Black, TEXT(""));
+	}
+#endif // !UE_BUILD_SHIPPING
+}
+
+/**
+ * @brief Separatore visivo con titolo di sezione.
+ *        Esempio output nel log: ===== [ CREATE SESSION ] =====
  */
 void FDebugUtils::Section(const FString& Title)
 {
-	// Costruisce la stringa separatrice con il titolo centrato
 	const FString Line = FString::Printf(TEXT("===== [ %s ] ====="), *Title.ToUpper());
-
-	// Usa sempre Log (non Warning/Error) perché è solo una etichetta visiva
 	UE_LOG(LogMenuSystemOnline, Log, TEXT("%s"), *Line);
 
 #if !UE_BUILD_SHIPPING
@@ -155,20 +155,16 @@ void FDebugUtils::Section(const FString& Title)
 	{
 		GEngine->AddOnScreenDebugMessage(-1, 6.f, FColor::Purple, Line);
 	}
-#endif // !UE_BUILD_SHIPPING
+#endif
 }
 
 /**
- * @brief Stampa una linea separatrice orizzontale senza titolo.
- *
- *        Esempio output nel log:
- *          --------------------------------------------------
+ * @brief Linea separatrice orizzontale senza titolo.
+ *        Esempio output nel log: --------------------------------------------------
  */
 void FDebugUtils::Separator()
 {
 	const FString Line(TEXT("--------------------------------------------------"));
 	UE_LOG(LogMenuSystemOnline, Log, TEXT("%s"), *Line);
-
-	// Nessun messaggio a schermo per il semplice separatore:
-	// sarebbe rumore visivo inutile durante il gioco.
+	// Nessun messaggio a schermo: sarebbe rumore visivo inutile.
 }

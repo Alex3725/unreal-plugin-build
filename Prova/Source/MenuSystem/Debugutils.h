@@ -6,67 +6,48 @@
 
 // ============================================================
 //  CATEGORIA LOG DEDICATA ALLE SESSIONI ONLINE
-//  Separata da LogMenuSystem (generale) per poter filtrare
-//  nel Output Log di Unreal solo i messaggi multiplayer:
-//    Filtro Output Log --> LogMenuSystemOnline
+//  Filtrabile nel Output Log di Unreal: LogMenuSystemOnline
 // ============================================================
 
 /**
- * @brief Categoria log dedicata a tutto ciò che riguarda le sessioni online,
- *        il subsistema Steam, la ricerca e il join delle sessioni multiplayer.
+ * @brief Categoria log per tutto ciò che riguarda sessioni online,
+ *        subsistema Steam, ricerca e join sessioni multiplayer.
  *
- * Utilizzo:
- *   UE_LOG(LogMenuSystemOnline, Log,     TEXT("messaggio normale"));
- *   UE_LOG(LogMenuSystemOnline, Warning, TEXT("attenzione"));
- *   UE_LOG(LogMenuSystemOnline, Error,   TEXT("errore critico"));
- *
- * Filtro nel Output Log di Unreal Editor:
- *   scrivi "LogMenuSystemOnline" nella barra filtro per vedere solo questi log.
+ * Filtro nel Output Log: scrivi "LogMenuSystemOnline" nella barra filtro.
  */
 DECLARE_LOG_CATEGORY_EXTERN(LogMenuSystemOnline, Log, All);
 
 
 // ============================================================
 //  FDebugUtils
-//  Classe di utilità pura (nessun UObject, nessuna istanza).
-//  Tutti i metodi sono statici e possono essere chiamati
-//  da qualunque punto del codice senza includere dipendenze pesanti.
+//  Classe di utilità puramente statica per debug visivo e testuale.
 //
-//  PATTERN DI UTILIZZO:
+//  UTILIZZO:
 //    FDebugUtils::Success(TEXT("[CREATE] Sessione creata!"));
 //    FDebugUtils::Error  (TEXT("[JOIN]   Sessione piena."));
 //    FDebugUtils::Warning(FString::Printf(TEXT("Ping: %d ms"), Ping));
 //    FDebugUtils::Section(TEXT("ONLINE SESSION INIT"));
+//    FDebugUtils::Status (TEXT("⚡ JOINING SERVER... ATTENDI"));  // <-- persistente
 //
 //  NOTE:
-//    - I messaggi a schermo (AddOnScreenDebugMessage) sono disabilitati
-//      automaticamente in UE_BUILD_SHIPPING per evitare spam in produzione.
-//    - I log UE_LOG rimangono sempre attivi (utili per crash report in shipping).
-//    - La durata dei messaggi a schermo è configurabile per ogni metodo.
+//    - Messaggi a schermo disabilitati in UE_BUILD_SHIPPING.
+//    - UE_LOG sempre attivo (utile per crash report in produzione).
+//    - Status() usa un key fisso: sostituisce il messaggio precedente
+//      invece di accumularne di nuovi. Ideale per stati di caricamento.
 // ============================================================
 
 /**
- * @brief Classe di utilità per il debug visivo e testuale in Unreal Engine 5.
- *
- * Fornisce metodi statici che combinano:
- *   1. UE_LOG  (log persistente su file e Output Log)
- *   2. AddOnScreenDebugMessage (messaggio colorato su schermo durante il gioco)
- *
- * Tutte le funzioni usano la categoria @ref LogMenuSystemOnline.
- * I messaggi a schermo sono compilati solo in configurazioni non-Shipping.
- *
- * Non istanziare questa classe: usa solo i metodi statici.
+ * @brief Classe di utilità per debug visivo in UE5.
+ *        Combina UE_LOG (log persistente) + AddOnScreenDebugMessage (schermo).
+ *        Non istanziare: usa solo i metodi statici.
  */
 class MENUSYSTEM_API FDebugUtils
 {
 public:
 
-	// -------------------------------------------------------
-	// DISABILITA costruttore/copia/move:
-	// questa classe è puramente statica, non va mai istanziata.
-	// -------------------------------------------------------
-	FDebugUtils()  = delete;
-	~FDebugUtils() = delete;
+	// Non istanziabile
+	FDebugUtils()                              = delete;
+	~FDebugUtils()                             = delete;
 	FDebugUtils(const FDebugUtils&)            = delete;
 	FDebugUtils& operator=(const FDebugUtils&) = delete;
 
@@ -76,11 +57,10 @@ public:
 
 	/**
 	 * @brief Messaggio generico con colore e durata personalizzabili.
-	 *        Combina UE_LOG(Log) + AddOnScreenDebugMessage.
 	 *
-	 * @param Msg      Testo del messaggio da visualizzare.
+	 * @param Msg      Testo del messaggio.
 	 * @param Color    Colore del testo a schermo (default: bianco).
-	 * @param Duration Durata in secondi del messaggio a schermo (default: 5s).
+	 * @param Duration Durata in secondi (default: 5s).
 	 */
 	static void Log(
 		const FString& Msg,
@@ -89,12 +69,11 @@ public:
 	);
 
 	/**
-	 * @brief Messaggio informativo (bianco/ciano).
-	 *        Usa UE_LOG(Log) + schermo bianco.
-	 *        Ideale per informazioni di stato neutre.
+	 * @brief Messaggio informativo neutro (ciano).
+	 *        Per stati, valori correnti, inizializzazioni.
 	 *
 	 * @param Msg      Testo del messaggio.
-	 * @param Duration Durata in secondi del messaggio a schermo (default: 5s).
+	 * @param Duration Durata in secondi (default: 5s).
 	 */
 	static void Info(
 		const FString& Msg,
@@ -103,11 +82,10 @@ public:
 
 	/**
 	 * @brief Messaggio di successo (verde).
-	 *        Usa UE_LOG(Log) + schermo verde.
-	 *        Ideale per confermare operazioni completate con successo.
+	 *        Per operazioni completate correttamente.
 	 *
 	 * @param Msg      Testo del messaggio.
-	 * @param Duration Durata in secondi del messaggio a schermo (default: 5s).
+	 * @param Duration Durata in secondi (default: 5s).
 	 */
 	static void Success(
 		const FString& Msg,
@@ -116,11 +94,10 @@ public:
 
 	/**
 	 * @brief Messaggio di avvertimento (giallo).
-	 *        Usa UE_LOG(Warning) + schermo giallo.
-	 *        Ideale per situazioni anomale ma non fatali.
+	 *        Per situazioni anomale ma recuperabili.
 	 *
 	 * @param Msg      Testo del messaggio.
-	 * @param Duration Durata in secondi del messaggio a schermo (default: 8s).
+	 * @param Duration Durata in secondi (default: 8s).
 	 */
 	static void Warning(
 		const FString& Msg,
@@ -128,12 +105,11 @@ public:
 	);
 
 	/**
-	 * @brief Messaggio di errore (rosso).
-	 *        Usa UE_LOG(Error) + schermo rosso.
-	 *        Ideale per errori critici che impediscono il corretto funzionamento.
+	 * @brief Messaggio di errore critico (rosso).
+	 *        Per errori che bloccano il flusso normale.
 	 *
 	 * @param Msg      Testo del messaggio.
-	 * @param Duration Durata in secondi del messaggio a schermo (default: 10s).
+	 * @param Duration Durata in secondi (default: 10s).
 	 */
 	static void Error(
 		const FString& Msg,
@@ -141,20 +117,45 @@ public:
 	);
 
 	/**
-	 * @brief Stampa un separatore visivo con un titolo di sezione.
-	 *        Utile per separare visivamente gruppi di log correlati.
-	 *        Esempio output:
-	 *          ===== [ CREATE SESSION ] =====
+	 * @brief Messaggio di stato PERSISTENTE (arancione, key fisso).
 	 *
-	 * @param Title Titolo della sezione (es. "CREATE SESSION", "FIND SESSIONS").
+	 * Differenza chiave rispetto agli altri metodi:
+	 *   - Usa un Key fisso (default: 200) invece di -1
+	 *   - Ogni chiamata SOSTITUISCE il messaggio precedente con lo stesso Key
+	 *   - Ideale per stati di caricamento che si aggiornano:
+	 *       Status("🔍 CERCANDO...")  → Status("✅ TROVATO!")  → Status("⚡ JOINING...")
+	 *   - Il vecchio messaggio scompare automaticamente quando ne arriva uno nuovo
+	 *
+	 * @param Msg      Testo del messaggio di stato.
+	 * @param Key      Key dello slot a schermo (default: 200). Cambia per messaggi indipendenti.
+	 * @param Duration Durata in secondi (default: 20s, più lungo per essere visibile).
+	 */
+	static void Status(
+		const FString& Msg,
+		int32          Key      = 200,
+		float          Duration = 20.f
+	);
+
+	/**
+	 * @brief Cancella il messaggio di stato dalla schermata.
+	 *        Chiama questo metodo quando il flusso è terminato
+	 *        (join completato, errore, timeout).
+	 *
+	 * @param Key Key del messaggio da cancellare (default: 200).
+	 */
+	static void ClearStatus(int32 Key = 200);
+
+	/**
+	 * @brief Separatore visivo con titolo di sezione.
+	 *        Es: ===== [ CREATE SESSION ] =====
+	 *
+	 * @param Title Titolo della sezione.
 	 */
 	static void Section(const FString& Title);
 
 	/**
-	 * @brief Stampa una linea separatrice orizzontale senza titolo.
-	 *        Utile per separare visivamente blocchi di log nel Output Log.
-	 *        Esempio output:
-	 *          --------------------------------------------------
+	 * @brief Linea separatrice orizzontale senza titolo.
+	 *        Es: --------------------------------------------------
 	 */
 	static void Separator();
 
@@ -162,17 +163,19 @@ private:
 
 	/**
 	 * @brief Implementazione interna condivisa da tutti i metodi pubblici.
-	 *        Gestisce sia UE_LOG che AddOnScreenDebugMessage.
+	 *        Scrive su UE_LOG e AddOnScreenDebugMessage.
 	 *
 	 * @param Msg       Testo del messaggio.
 	 * @param Color     Colore del messaggio a schermo.
 	 * @param Duration  Durata in secondi del messaggio a schermo.
 	 * @param Verbosity Verbosity di UE_LOG (Log, Warning, Error).
+	 * @param Key       Key dello slot (-1 = sempre nuovo, >=0 = sovrascrive quello slot).
 	 */
 	static void PrintImpl(
-		const FString&    Msg,
-		FColor            Color,
-		float             Duration,
-		ELogVerbosity::Type Verbosity
+		const FString&      Msg,
+		FColor              Color,
+		float               Duration,
+		ELogVerbosity::Type Verbosity,
+		int32               Key = -1
 	);
 };

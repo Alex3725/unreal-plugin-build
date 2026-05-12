@@ -7,12 +7,13 @@
 #include "Interfaces/OnlineSessionInterface.h"
 #include "Logging/LogMacros.h"
 
-
-// Includi il sistema debug professionale.
+// Includi il sistema debug professionale PRIMA del .generated.h.
+// Regola UE5: .generated.h deve essere SEMPRE l'ultimo #include.
 // Tutti i file che includono questo header ereditano automaticamente
 // FDebugUtils e la categoria LogMenuSystemOnline.
 #include "DebugUtils.h"
 
+// DEVE essere l'ultimo include — regola obbligatoria di Unreal Header Tool (UHT)
 #include "MenuSystemCharacter.generated.h"
 
 class USpringArmComponent;
