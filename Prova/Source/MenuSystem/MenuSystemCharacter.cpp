@@ -18,6 +18,15 @@
 #include "OnlineSessionSettings.h"
 
 // ============================================================
+// BUG FIX HOST: aggiunto GameplayStatics per OpenLevel.
+// ServerTravel NON va usato per aprire la mappa lobby
+// dal menu principale: in build standalone non crea
+// correttamente il listen server né inizializza SteamNetDriver.
+// OpenLevel con opzione "listen" è il metodo corretto.
+// ============================================================
+#include "Kismet/GameplayStatics.h"
+
+// ============================================================
 // HELPER MACRO: stampa a schermo + log contemporaneamente.
 // Uso: DBG_MSG(FColor::Green, TEXT("messaggio"))
 // ============================================================
@@ -355,21 +364,41 @@ void AMenuSystemCharacter::OnCreateSessionComplete(FName SessionName, bool bWasS
 		return;
 	}
 
-	// Sessione creata con successo: vai nella mappa Lobby come Listen Server
-	UWorld* World = GetWorld();
+	// -------------------------------------------------------
+	// BUG FIX HOST: sostituito ServerTravel con OpenLevel.
+	//
+	// PROBLEMA PRECEDENTE:
+	//   World->ServerTravel("/Game/ThirdPerson/Maps/Lobby?listen")
+	//   In editor funziona, ma in build standalone:
+	//   - il listen server spesso non viene creato correttamente,
+	//   - SteamNetDriver non si inizializza prima del travel,
+	//   - il client non riesce a connettersi.
+	//
+	// SOLUZIONE CORRETTA:
+	//   UGameplayStatics::OpenLevel con opzione "listen".
+	//   Questo è il metodo standard per aprire una mappa
+	//   come listen server dal main menu, sia in editor
+	//   che in build standalone/shipping.
+	//
+	// NOTE:
+	//   - ServerTravel va usato SOLO quando il server è già
+	//     attivo e vuoi spostare TUTTI i client su un'altra
+	//     mappa (es. da Lobby → GameMap a partita iniziata).
+	//   - bAbsolute = true: percorso assoluto, non relativo.
+	//   - "listen" nell'Options string apre la mappa come
+	//     listen server (host gioca anche).
+	// -------------------------------------------------------
 
-	if (World)
-	{
-		DBG_MSG(FColor::Cyan, TEXT("[CREATE CB] Sessione creata! Eseguo ServerTravel verso /Game/ThirdPerson/Maps/Lobby?listen ..."));
+	DBG_MSG(FColor::Cyan, TEXT("[CREATE CB] Sessione creata! Avvio OpenLevel verso Lobby come listen server..."));
 
-		// ?listen = apre questa mappa come listen server (host che gioca anche)
-		// C:\...\Content\ corrisponde a /Game/
-		World->ServerTravel(FString("/Game/ThirdPerson/Maps/Lobby?listen"));
-	}
-	else
-	{
-		DBG_ERR(TEXT("[CREATE CB] ERRORE: GetWorld() ha ritornato nullptr! ServerTravel non eseguito."));
-	}
+	UGameplayStatics::OpenLevel(
+		this,
+		FName("/Game/ThirdPerson/Maps/Lobby"),
+		true,          // bAbsolute
+		FString("listen") // Options: apre come listen server
+	);
+
+	DBG_MSG(FColor::Cyan, TEXT("[CREATE CB] OpenLevel(Lobby, listen) chiamato."));
 }
 
 // =========================
@@ -646,7 +675,7 @@ void AMenuSystemCharacter::OnFindSessionsComplete(bool bWasSuccessful)
 				DBG_MSG(FColor::Green, TEXT("[FIND CB] JoinSession() avviato. In attesa del callback OnJoinSessionsComplete..."));
 			}
 
-			// 🔥 IMPORTANTE: esci dal loop dopo il primo join valido
+			// IMPORTANTE: esci dal loop dopo il primo join valido
 			// per non tentare di joinare più sessioni in parallelo
 			break;
 		}
@@ -737,7 +766,12 @@ void AMenuSystemCharacter::OnJoinSessionsComplete(
 	}
 
 	// -------------------------------------------------------
-	// Join riuscito: risolvi l'indirizzo e connettiti al server
+	// Join riuscito: risolvi l'indirizzo e connettiti al server.
+	//
+	// NOTA CLIENT: in C++ il travel verso il server NON è
+	// automatico come nei Blueprint. Bisogna chiamare
+	// GetResolvedConnectString + ClientTravel manualmente.
+	// Questo è il comportamento standard e corretto in UE5 C++.
 	// -------------------------------------------------------
 
 	FString Address;
@@ -763,7 +797,7 @@ void AMenuSystemCharacter::OnJoinSessionsComplete(
 	}
 
 	// Viaggio verso il server dell'host
-	// TRAVEL_Absolute = indirizzo assoluto (incluso IP Steam)
+	// TRAVEL_Absolute = indirizzo assoluto (incluso IP Steam relay)
 	PC->ClientTravel(Address, TRAVEL_Absolute);
 
 	DBG_MSG(FColor::Green, FString::Printf(
