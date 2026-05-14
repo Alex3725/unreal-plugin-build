@@ -18,7 +18,7 @@
 #include "OnlineSessionSettings.h"
 
 // ============================================================
-// BUG FIX HOST: aggiunto GameplayStatics per OpenLevel.
+// BUG FIX #5 (HOST): aggiunto GameplayStatics per OpenLevel.
 // ServerTravel NON va usato per aprire la mappa lobby
 // dal menu principale: in build standalone non crea
 // correttamente il listen server né inizializza SteamNetDriver.
@@ -67,7 +67,15 @@ AMenuSystemCharacter::AMenuSystemCharacter():
 	FindSessionsCompleteDelegate(FOnFindSessionsCompleteDelegate::CreateUObject(this, &ThisClass::OnFindSessionsComplete)),
 
 	// Quando JoinSession finisce, chiama OnJoinSessionsComplete
-	JoinSessionCompleteDelegate(FOnJoinSessionCompleteDelegate::CreateUObject(this, &ThisClass::OnJoinSessionsComplete))
+	JoinSessionCompleteDelegate(FOnJoinSessionCompleteDelegate::CreateUObject(this, &ThisClass::OnJoinSessionsComplete)),
+
+	// ---------------------------------------------------------
+	// BUG FIX #6: delegate per gli inviti Steam.
+	// Quando l'utente accetta un invito dall'overlay Steam,
+	// questo delegate viene chiamato automaticamente dal sistema.
+	// Senza di esso, accettare un invito non fa assolutamente nulla.
+	// ---------------------------------------------------------
+	SessionUserInviteAcceptedDelegate(FOnSessionUserInviteAcceptedDelegate::CreateUObject(this, &ThisClass::OnSessionUserInviteAccepted))
 
 {
 	// Set size for collision capsule
@@ -82,8 +90,6 @@ AMenuSystemCharacter::AMenuSystemCharacter():
 	GetCharacterMovement()->bOrientRotationToMovement = true;
 	GetCharacterMovement()->RotationRate = FRotator(0.0f, 500.0f, 0.0f);
 
-	// Note: For faster iteration times these variables, and many more, can be tweaked in the Character Blueprint
-	// instead of recompiling to adjust them
 	GetCharacterMovement()->JumpZVelocity = 500.f;
 	GetCharacterMovement()->AirControl = 0.35f;
 	GetCharacterMovement()->MaxWalkSpeed = 500.f;
@@ -102,9 +108,6 @@ AMenuSystemCharacter::AMenuSystemCharacter():
 	FollowCamera->SetupAttachment(CameraBoom, USpringArmComponent::SocketName);
 	FollowCamera->bUsePawnControlRotation = false;
 
-	// Note: The skeletal mesh and anim blueprint references on the Mesh component (inherited from Character) 
-	// are set in the derived blueprint asset named ThirdPersonCharacter (to avoid direct content references in C++)
-
 	// Reset del flag per la ricreazione sessione
 	bCreateSessionOnDestroy = false;
 	
@@ -118,15 +121,25 @@ AMenuSystemCharacter::AMenuSystemCharacter():
 	{
 		OnlineSessionInterface = Subsystem->GetSessionInterface();
 
-		// Conferma a schermo che il subsistema è stato trovato
 		DBG_MSG(FColor::Green,
 			FString::Printf(TEXT("[INIT] Subsistema online trovato: %s"),
 			*Subsystem->GetSubsystemName().ToString()));
 
-		// Verifica anche che l'interfaccia sessione sia valida
 		if (OnlineSessionInterface.IsValid())
 		{
 			DBG_MSG(FColor::Green, TEXT("[INIT] OnlineSessionInterface valida."));
+
+			// ---------------------------------------------------------
+			// BUG FIX #6: registra il delegate per gli inviti Steam.
+			// Questo va fatto una sola volta all'avvio, qui nel costruttore.
+			// L'handle viene salvato per poter rimuovere il delegate.
+			// ---------------------------------------------------------
+			SessionUserInviteAcceptedDelegateHandle =
+				OnlineSessionInterface->AddOnSessionUserInviteAcceptedDelegate_Handle(
+					SessionUserInviteAcceptedDelegate
+				);
+
+			DBG_MSG(FColor::Green, TEXT("[INIT] InviteAcceptedDelegate registrato."));
 		}
 		else
 		{
@@ -135,8 +148,6 @@ AMenuSystemCharacter::AMenuSystemCharacter():
 	}
 	else
 	{
-		// Nessun subsistema trovato: probabilmente Steam non è avviato
-		// oppure il plugin OnlineSubsystemSteam non è abilitato
 		DBG_ERR(TEXT("[INIT] ERRORE CRITICO: Nessun subsistema online trovato!"));
 		DBG_WARN(TEXT("[INIT] Assicurati che Steam sia avviato e che il plugin OnlineSubsystemSteam sia abilitato nel .uproject"));
 	}
@@ -148,7 +159,6 @@ AMenuSystemCharacter::AMenuSystemCharacter():
 
 void AMenuSystemCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
 {
-	// Set up action bindings
 	if (UEnhancedInputComponent* EnhancedInputComponent = Cast<UEnhancedInputComponent>(PlayerInputComponent)) {
 		
 		// Jumping
@@ -165,7 +175,7 @@ void AMenuSystemCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInpu
 	else
 	{
 		UE_LOG(LogMenuSystem, Error,
-			TEXT("'%s' Failed to find an Enhanced Input component! This template is built to use the Enhanced Input system."),
+			TEXT("'%s' Failed to find an Enhanced Input component!"),
 			*GetNameSafe(this));
 	}
 }
@@ -178,66 +188,44 @@ void AMenuSystemCharacter::CreateGameSession()
 {
 	DBG_MSG(FColor::Cyan, TEXT("[CREATE] CreateGameSession() chiamata."));
 
-	// Controllo di sicurezza: l'interfaccia online deve essere valida
 	if (!OnlineSessionInterface.IsValid())
 	{
-		DBG_ERR(TEXT("[CREATE] ERRORE: OnlineSessionInterface non valida. Impossibile creare la sessione."));
+		DBG_ERR(TEXT("[CREATE] ERRORE: OnlineSessionInterface non valida."));
 		return;
 	}
 
-	// -------------------------------------------------------
-	// Controlla se esiste già una sessione attiva
-	// -------------------------------------------------------
 	auto ExistingSession = OnlineSessionInterface->GetNamedSession(NAME_GameSession);
 
 	if (ExistingSession != nullptr)
 	{
-		// Sessione già esistente: la distruggiamo prima di ricrearne una nuova.
-		// Settiamo il flag così OnDestroySessionComplete sa che deve ricrearla.
 		DBG_WARN(TEXT("[CREATE] Sessione esistente trovata. La distruggo prima di crearne una nuova..."));
 
 		bCreateSessionOnDestroy = true;
 
-		// ---------------------------------------------------------
-		// BUG FIX #3 (completo): registriamo il DestroyDelegate
-		// e SALVIAMO l'handle. Prima questo blocco non esisteva,
-		// quindi dopo DestroySession il flusso si bloccava qui.
-		// ---------------------------------------------------------
 		DestroySessionCompleteDelegateHandle =
 			OnlineSessionInterface->AddOnDestroySessionCompleteDelegate_Handle(DestroySessionCompleteDelegate);
 
 		OnlineSessionInterface->DestroySession(NAME_GameSession);
-
-		// Usciamo: la sessione verrà ricreata in OnDestroySessionComplete
 		return;
 	}
 
-	// -------------------------------------------------------
-	// Nessuna sessione esistente: procedi con la creazione
-	// -------------------------------------------------------
-
-	// Registra il delegate per la callback di creazione e salva l'handle
 	CreateSessionCompleteDelegateHandle =
 		OnlineSessionInterface->AddOnCreateSessionCompleteDelegate_Handle(CreateSessionCompleteDelegate);
 
-	DBG_MSG(FColor::Cyan, TEXT("[CREATE] Delegate di creazione registrato. Configuro le impostazioni sessione..."));
+	DBG_MSG(FColor::Cyan, TEXT("[CREATE] Delegate registrato. Configuro le impostazioni sessione..."));
 
-	// Configurazione sessione
 	TSharedPtr<FOnlineSessionSettings> SessionSettings = MakeShared<FOnlineSessionSettings>();
 
-	SessionSettings->bIsLANMatch             = false;   // sessione online, non LAN
-	SessionSettings->NumPublicConnections    = 4;       // max 4 giocatori
-	SessionSettings->bShouldAdvertise        = true;    // visibile nei risultati di ricerca
-	SessionSettings->bUsesPresence           = true;    // richiesto da Steam per le lobby
-	SessionSettings->bAllowJoinInProgress    = true;    // si può entrare anche a partita iniziata
-	SessionSettings->bAllowJoinViaPresence   = true;    // join tramite presenza Steam
-	SessionSettings->bUseLobbiesIfAvailable  = true;    // usa il sistema Lobby di Steam se disponibile
-	SessionSettings->bAllowInvites           = true;    // permetti gli inviti
-	SessionSettings->bAllowJoinViaPresenceFriendsOnly = false; // visibile a tutti, non solo amici
+	SessionSettings->bIsLANMatch             = false;
+	SessionSettings->NumPublicConnections    = 4;
+	SessionSettings->bShouldAdvertise        = true;
+	SessionSettings->bUsesPresence           = true;
+	SessionSettings->bAllowJoinInProgress    = true;
+	SessionSettings->bAllowJoinViaPresence   = true;
+	SessionSettings->bUseLobbiesIfAvailable  = true;
+	SessionSettings->bAllowInvites           = true;
+	SessionSettings->bAllowJoinViaPresenceFriendsOnly = false;
 
-	// Imposta il tipo di partita come chiave di ricerca
-	// "Questa sessione ha MatchType = FreeForAll e deve essere visibile agli altri giocatori"
-	// FName("MatchType") è la chiave, FString("FreeForAll") è il valore
 	SessionSettings->Set(
 		FName("MatchType"),
 		FString("FreeForAll"),
@@ -253,12 +241,11 @@ void AMenuSystemCharacter::CreateGameSession()
 		SessionSettings->bUseLobbiesIfAvailable ? TEXT("SI") : TEXT("NO")
 	));
 
-	// Recupera il player locale
 	ULocalPlayer* LocalPlayer = GetWorld()->GetFirstLocalPlayerFromController();
 
 	if (!LocalPlayer)
 	{
-		DBG_ERR(TEXT("[CREATE] ERRORE: Nessun LocalPlayer trovato! Impossibile creare la sessione."));
+		DBG_ERR(TEXT("[CREATE] ERRORE: Nessun LocalPlayer trovato!"));
 		return;
 	}
 
@@ -267,8 +254,6 @@ void AMenuSystemCharacter::CreateGameSession()
 		LocalPlayer->GetControllerId()
 	));
 
-	// Avvia la creazione della sessione (ASYNC)
-	// Il risultato arriva in OnCreateSessionComplete
 	bool bStarted = OnlineSessionInterface->CreateSession(
 		LocalPlayer->GetControllerId(),
 		NAME_GameSession,
@@ -277,11 +262,8 @@ void AMenuSystemCharacter::CreateGameSession()
 
 	if (!bStarted)
 	{
-		// CreateSession ha ritornato false immediatamente (errore sincrono)
 		DBG_ERR(TEXT("[CREATE] ERRORE: CreateSession() ha ritornato false immediatamente!"));
-		DBG_WARN(TEXT("[CREATE] Possibili cause: Steam non avviato, sessione già in creazione, o SteamDevAppId errato nel DefaultEngine.ini"));
-
-		// Pulisci il delegate visto che non ci sarà callback
+		DBG_WARN(TEXT("[CREATE] Controlla: Steam avviato? SteamDevAppId=480? bEnabled=true?"));
 		OnlineSessionInterface->ClearOnCreateSessionCompleteDelegate_Handle(CreateSessionCompleteDelegateHandle);
 	}
 	else
@@ -297,11 +279,8 @@ void AMenuSystemCharacter::CreateGameSession()
 void AMenuSystemCharacter::OnDestroySessionComplete(FName SessionName, bool bWasSuccessful)
 {
 	// ---------------------------------------------------------
-	// BUG FIX #3 (implementazione mancante):
-	// Questa funzione era DICHIARATA nell'header ma non aveva
-	// alcuna implementazione nel .cpp. Di conseguenza, dopo
-	// DestroySession il flusso si bloccava completamente
-	// e la sessione non veniva mai ricreata.
+	// BUG FIX #3: questa funzione era DICHIARATA nell'header
+	// ma non aveva implementazione nel .cpp originale.
 	// ---------------------------------------------------------
 
 	DBG_MSG(bWasSuccessful ? FColor::Green : FColor::Red,
@@ -310,7 +289,6 @@ void AMenuSystemCharacter::OnDestroySessionComplete(FName SessionName, bool bWas
 		bWasSuccessful ? TEXT("SI") : TEXT("NO")
 	));
 
-	// Pulisci sempre il delegate, indipendentemente dal risultato
 	if (OnlineSessionInterface.IsValid())
 	{
 		OnlineSessionInterface->ClearOnDestroySessionCompleteDelegate_Handle(DestroySessionCompleteDelegateHandle);
@@ -319,10 +297,9 @@ void AMenuSystemCharacter::OnDestroySessionComplete(FName SessionName, bool bWas
 
 	if (bWasSuccessful)
 	{
-		// Controlla se è richiesta la ricreazione della sessione
 		if (bCreateSessionOnDestroy)
 		{
-			DBG_MSG(FColor::Cyan, TEXT("[DESTROY] Sessione distrutta con successo. Riciclo: richiamo CreateGameSession()..."));
+			DBG_MSG(FColor::Cyan, TEXT("[DESTROY] Sessione distrutta. Riciclo: richiamo CreateGameSession()..."));
 			bCreateSessionOnDestroy = false;
 			CreateGameSession();
 		}
@@ -333,7 +310,7 @@ void AMenuSystemCharacter::OnDestroySessionComplete(FName SessionName, bool bWas
 	}
 	else
 	{
-		DBG_ERR(TEXT("[DESTROY] ERRORE: la distruzione della sessione è fallita! Impossibile procedere."));
+		DBG_ERR(TEXT("[DESTROY] ERRORE: la distruzione della sessione è fallita!"));
 		bCreateSessionOnDestroy = false;
 	}
 }
@@ -350,7 +327,6 @@ void AMenuSystemCharacter::OnCreateSessionComplete(FName SessionName, bool bWasS
 		*SessionName.ToString()
 	));
 
-	// Pulisci il delegate di creazione appena possibile
 	if (OnlineSessionInterface.IsValid())
 	{
 		OnlineSessionInterface->ClearOnCreateSessionCompleteDelegate_Handle(CreateSessionCompleteDelegateHandle);
@@ -360,33 +336,26 @@ void AMenuSystemCharacter::OnCreateSessionComplete(FName SessionName, bool bWasS
 	if (!bWasSuccessful)
 	{
 		DBG_ERR(TEXT("[CREATE CB] ERRORE: la sessione non è stata creata."));
-		DBG_WARN(TEXT("[CREATE CB] Controlla: 1) Steam è avviato? 2) SteamDevAppId=480 in DefaultEngine.ini? 3) bEnabled=true per OnlineSubsystemSteam?"));
+		DBG_WARN(TEXT("[CREATE CB] Controlla: 1) Steam è avviato? 2) SteamDevAppId=480? 3) bEnabled=true per OnlineSubsystemSteam?"));
 		return;
 	}
 
 	// -------------------------------------------------------
-	// BUG FIX HOST: sostituito ServerTravel con OpenLevel.
+	// BUG FIX #5 (HOST): sostituito ServerTravel con OpenLevel.
 	//
 	// PROBLEMA PRECEDENTE:
 	//   World->ServerTravel("/Game/ThirdPerson/Maps/Lobby?listen")
-	//   In editor funziona, ma in build standalone:
-	//   - il listen server spesso non viene creato correttamente,
-	//   - SteamNetDriver non si inizializza prima del travel,
-	//   - il client non riesce a connettersi.
+	//   In build standalone il listen server non viene creato
+	//   correttamente e SteamNetDriver non si inizializza.
 	//
 	// SOLUZIONE CORRETTA:
 	//   UGameplayStatics::OpenLevel con opzione "listen".
-	//   Questo è il metodo standard per aprire una mappa
-	//   come listen server dal main menu, sia in editor
-	//   che in build standalone/shipping.
+	//   Metodo standard per aprire una mappa come listen server
+	//   dal main menu, sia in editor che in build standalone.
 	//
-	// NOTE:
-	//   - ServerTravel va usato SOLO quando il server è già
-	//     attivo e vuoi spostare TUTTI i client su un'altra
-	//     mappa (es. da Lobby → GameMap a partita iniziata).
-	//   - bAbsolute = true: percorso assoluto, non relativo.
-	//   - "listen" nell'Options string apre la mappa come
-	//     listen server (host gioca anche).
+	// QUANDO USARE ServerTravel:
+	//   Solo quando il server è GIA' attivo e vuoi spostare
+	//   TUTTI i client su un'altra mappa (es: Lobby -> GameMap).
 	// -------------------------------------------------------
 
 	DBG_MSG(FColor::Cyan, TEXT("[CREATE CB] Sessione creata! Avvio OpenLevel verso Lobby come listen server..."));
@@ -394,8 +363,8 @@ void AMenuSystemCharacter::OnCreateSessionComplete(FName SessionName, bool bWasS
 	UGameplayStatics::OpenLevel(
 		this,
 		FName("/Game/ThirdPerson/Maps/Lobby"),
-		true,          // bAbsolute
-		FString("listen") // Options: apre come listen server
+		true,             // bAbsolute: usa percorso assoluto
+		FString("listen") // apre come listen server
 	);
 
 	DBG_MSG(FColor::Cyan, TEXT("[CREATE CB] OpenLevel(Lobby, listen) chiamato."));
@@ -409,52 +378,37 @@ void AMenuSystemCharacter::JoinGameSession()
 {
 	DBG_MSG(FColor::Orange, TEXT("[JOIN] JoinGameSession() chiamata. Avvio ricerca sessioni..."));
 
-	// STEP 1: Verifica che il sistema online sia valido
 	if (!OnlineSessionInterface.IsValid())
 	{
-		DBG_ERR(TEXT("[JOIN] ERRORE: OnlineSessionInterface non valida. Impossibile cercare sessioni."));
+		DBG_ERR(TEXT("[JOIN] ERRORE: OnlineSessionInterface non valida."));
 		return;
 	}
 
-	// STEP 2: Controlla se è già in corso una ricerca per evitare doppioni
 	if (SessionSearch.IsValid() && SessionSearch->SearchState == EOnlineAsyncTaskState::InProgress)
 	{
-		DBG_WARN(TEXT("[JOIN] ATTENZIONE: una ricerca sessioni è già in corso. Ignoro la nuova richiesta."));
+		DBG_WARN(TEXT("[JOIN] ATTENZIONE: una ricerca sessioni è già in corso."));
 		return;
 	}
 
 	// ---------------------------------------------------------
-	// BUG FIX #1: prima il risultato di AddOnFindSessionsCompleteDelegate_Handle
-	// non veniva salvato in FindSessionsCompleteDelegateHandle,
-	// rendendo impossibile rimuovere il delegate in seguito.
+	// BUG FIX #1: handle salvato correttamente
 	// ---------------------------------------------------------
-
-	// STEP 3: Registra il delegate e SALVA l'handle (BUG FIX)
 	FindSessionsCompleteDelegateHandle =
 		OnlineSessionInterface->AddOnFindSessionsCompleteDelegate_Handle(FindSessionsCompleteDelegate);
 
 	DBG_MSG(FColor::Orange, TEXT("[JOIN] FindSessionsDelegate registrato."));
 
-	// STEP 4: Crea l'oggetto di ricerca sessioni
 	SessionSearch = MakeShareable(new FOnlineSessionSearch());
 
-	// STEP 5: Configurazione parametri di ricerca
-	// Valore alto perché con SteamDevAppId=480 ci sono molte sessioni pubbliche di test
 	SessionSearch->MaxSearchResults = 10000;
-	SessionSearch->bIsLanQuery      = false; // online, non LAN
+	SessionSearch->bIsLanQuery      = false;
 
-	// Filtro presenza: cerca solo sessioni con presenza attiva (richiesto da Steam)
-	// NOTA: usiamo FName(TEXT("SEARCH_PRESENCE")) invece della macro SEARCH_PRESENCE
-	// perché su alcune versioni di UE5 la macro non viene risolta correttamente
-	// a causa di un problema di inclusione degli header di OnlineSessionNames.
 	SessionSearch->QuerySettings.Set(
 		FName(TEXT("SEARCH_PRESENCE")),
 		true,
 		EOnlineComparisonOp::Equals
 	);
 
-	// Filtro lobby: cerca solo sessioni che usano il sistema Lobby di Steam
-	// (coerente con bUseLobbiesIfAvailable=true impostato in CreateGameSession)
 	SessionSearch->QuerySettings.Set(
 		SEARCH_LOBBIES,
 		true,
@@ -467,27 +421,20 @@ void AMenuSystemCharacter::JoinGameSession()
 		SessionSearch->bIsLanQuery ? TEXT("SI") : TEXT("NO")
 	));
 
-	// STEP 6: Recupera il player locale
 	const ULocalPlayer* LocalPlayer = GetWorld()->GetFirstLocalPlayerFromController();
 	
 	if (!LocalPlayer)
 	{
-		DBG_ERR(TEXT("[JOIN] ERRORE: Nessun LocalPlayer trovato! Impossibile avviare FindSessions."));
-
-		// Pulisci il delegate visto che non procederemo
+		DBG_ERR(TEXT("[JOIN] ERRORE: Nessun LocalPlayer trovato!"));
 		OnlineSessionInterface->ClearOnFindSessionsCompleteDelegate_Handle(FindSessionsCompleteDelegateHandle);
 		return;
 	}
 
-	// Verifica che il NetId del player sia valido prima di usarlo
 	TSharedPtr<const FUniqueNetId> PlayerId = LocalPlayer->GetPreferredUniqueNetId().GetUniqueNetId();
 
 	if (!PlayerId.IsValid())
 	{
 		DBG_ERR(TEXT("[JOIN] ERRORE: UniqueNetId del player non valido! Steam potrebbe non essere loggato."));
-		DBG_WARN(TEXT("[JOIN] Assicurati di essere loggato su Steam con un account valido."));
-
-		// Pulisci il delegate
 		OnlineSessionInterface->ClearOnFindSessionsCompleteDelegate_Handle(FindSessionsCompleteDelegateHandle);
 		return;
 	}
@@ -497,8 +444,6 @@ void AMenuSystemCharacter::JoinGameSession()
 		*PlayerId->ToString()
 	));
 
-	// STEP 7: Avvia la ricerca (ASYNC)
-	// Il risultato arriverà in OnFindSessionsComplete
 	bool bStarted = OnlineSessionInterface->FindSessions(
 		*LocalPlayer->GetPreferredUniqueNetId(),
 		SessionSearch.ToSharedRef()
@@ -507,9 +452,6 @@ void AMenuSystemCharacter::JoinGameSession()
 	if (!bStarted)
 	{
 		DBG_ERR(TEXT("[JOIN] ERRORE: FindSessions() ha ritornato false immediatamente!"));
-		DBG_WARN(TEXT("[JOIN] Possibili cause: Steam non avviato, già in una sessione, o problema di autenticazione."));
-
-		// Pulisci il delegate visto che non ci sarà callback
 		OnlineSessionInterface->ClearOnFindSessionsCompleteDelegate_Handle(FindSessionsCompleteDelegateHandle);
 	}
 	else
@@ -530,12 +472,8 @@ void AMenuSystemCharacter::OnFindSessionsComplete(bool bWasSuccessful)
 	));
 
 	// ---------------------------------------------------------
-	// BUG FIX #1 (pulizia): ora che abbiamo l'handle salvato,
-	// possiamo rimuovere correttamente il delegate.
-	// Prima l'handle era vuoto e la Clear non faceva nulla.
+	// BUG FIX #1 (pulizia): handle salvato, Clear funziona ora.
 	// ---------------------------------------------------------
-
-	// Pulisci subito il FindSessions delegate per evitare doppi callback
 	if (OnlineSessionInterface.IsValid())
 	{
 		OnlineSessionInterface->ClearOnFindSessionsCompleteDelegate_Handle(FindSessionsCompleteDelegateHandle);
@@ -547,72 +485,53 @@ void AMenuSystemCharacter::OnFindSessionsComplete(bool bWasSuccessful)
 		return;
 	}
 
-	// Caso: la ricerca è fallita
 	if (!bWasSuccessful)
 	{
 		DBG_ERR(TEXT("[FIND CB] ERRORE: la ricerca sessioni è fallita."));
-		DBG_WARN(TEXT("[FIND CB] Controlla: 1) Steam attivo? 2) Connessione internet? 3) Host usa lo stesso SteamDevAppId=480?"));
 		return;
 	}
 
-	// Caso: SessionSearch non è valida
 	if (!SessionSearch.IsValid())
 	{
 		DBG_ERR(TEXT("[FIND CB] ERRORE: SessionSearch non è valida dopo la ricerca!"));
 		return;
 	}
 
-	// Log numero sessioni trovate
 	int32 NumResults = SessionSearch->SearchResults.Num();
 	DBG_MSG(NumResults > 0 ? FColor::Green : FColor::Yellow,
 		FString::Printf(TEXT("[FIND CB] Sessioni trovate: %d"), NumResults)
 	);
 
-	// Caso: nessuna sessione trovata
 	if (NumResults == 0)
 	{
 		DBG_WARN(TEXT("[FIND CB] Nessuna sessione disponibile."));
-		DBG_WARN(TEXT("[FIND CB] Possibili cause: 1) L'host non ha ancora creato la sessione. 2) Firewall. 3) Diverso SteamDevAppId. 4) bUseLobbiesIfAvailable non corrisponde."));
 		return;
 	}
 
-	// -------------------------------------------------------
-	// Itera su tutte le sessioni trovate e cerca MatchType == "FreeForAll"
-	// -------------------------------------------------------
 	for (int32 i = 0; i < SessionSearch->SearchResults.Num(); ++i)
 	{
 		const FOnlineSessionSearchResult& Result = SessionSearch->SearchResults[i];
 
-		// Dati identificativi della sessione
 		const FString SessionId  = Result.GetSessionIdStr();
 		const FString OwnerName  = Result.Session.OwningUserName;
 		const int32   Ping       = Result.PingInMs;
 		const int32   OpenSlots  = Result.Session.NumOpenPublicConnections;
 
-		// Recupera il MatchType custom impostato dall'host
 		FString MatchType;
 		Result.Session.SessionSettings.Get(FName("MatchType"), MatchType);
 
 		DBG_MSG(FColor::Cyan, FString::Printf(
 			TEXT("[FIND CB] [%d/%d] Id=%s | Host=%s | Ping=%dms | SlotsLiberi=%d | MatchType=%s"),
-			i + 1,
-			NumResults,
-			*SessionId,
-			*OwnerName,
-			Ping,
-			OpenSlots,
+			i + 1, NumResults, *SessionId, *OwnerName, Ping, OpenSlots,
 			MatchType.IsEmpty() ? TEXT("(non impostato)") : *MatchType
 		));
 
-		// Controlla se questa sessione è del tipo giusto
 		if (MatchType == TEXT("FreeForAll"))
 		{
 			DBG_MSG(FColor::Green, FString::Printf(
-				TEXT("[FIND CB] Sessione FreeForAll trovata! (index %d) Tentativo di join..."),
-				i
+				TEXT("[FIND CB] Sessione FreeForAll trovata! (index %d) Tentativo di join..."), i
 			));
 
-			// Verifica che ci siano slot liberi prima di tentare il join
 			if (OpenSlots <= 0)
 			{
 				DBG_WARN(TEXT("[FIND CB] La sessione è piena (0 slot liberi). Cerco la prossima..."));
@@ -620,45 +539,34 @@ void AMenuSystemCharacter::OnFindSessionsComplete(bool bWasSuccessful)
 			}
 
 			// ---------------------------------------------------------
-			// BUG FIX #2: prima il risultato di AddOnJoinSessionCompleteDelegate_Handle
-			// non veniva salvato in JoinSessionCompleteDelegateHandle.
-			// Ora lo salviamo correttamente così possiamo pulirlo in seguito.
+			// BUG FIX #2: handle salvato correttamente
 			// ---------------------------------------------------------
-
-			// Registra il JoinDelegate e SALVA l'handle (BUG FIX)
 			JoinSessionCompleteDelegateHandle =
 				OnlineSessionInterface->AddOnJoinSessionCompleteDelegate_Handle(JoinSessionCompleteDelegate);
 
 			DBG_MSG(FColor::Green, TEXT("[FIND CB] JoinDelegate registrato."));
 
-			// Recupera il player locale
 			const ULocalPlayer* LocalPlayer = GetWorld()->GetFirstLocalPlayerFromController();
 
 			if (!LocalPlayer)
 			{
-				DBG_ERR(TEXT("[FIND CB] ERRORE: LocalPlayer non trovato! Impossibile fare il join."));
-
-				// Pulisci il delegate appena registrato
+				DBG_ERR(TEXT("[FIND CB] ERRORE: LocalPlayer non trovato!"));
 				OnlineSessionInterface->ClearOnJoinSessionCompleteDelegate_Handle(JoinSessionCompleteDelegateHandle);
 				return;
 			}
 
-			// Verifica NetId
 			TSharedPtr<const FUniqueNetId> PlayerId = LocalPlayer->GetPreferredUniqueNetId().GetUniqueNetId();
 			if (!PlayerId.IsValid())
 			{
-				DBG_ERR(TEXT("[FIND CB] ERRORE: UniqueNetId non valido! Impossibile fare il join."));
+				DBG_ERR(TEXT("[FIND CB] ERRORE: UniqueNetId non valido!"));
 				OnlineSessionInterface->ClearOnJoinSessionCompleteDelegate_Handle(JoinSessionCompleteDelegateHandle);
 				return;
 			}
 
 			DBG_MSG(FColor::Green, FString::Printf(
-				TEXT("[FIND CB] Avvio JoinSession per l'host: %s..."),
-				*OwnerName
+				TEXT("[FIND CB] Avvio JoinSession per l'host: %s..."), *OwnerName
 			));
 
-			// Avvia il join (ASYNC)
-			// Il risultato arriverà in OnJoinSessionsComplete
 			bool bJoinStarted = OnlineSessionInterface->JoinSession(
 				*LocalPlayer->GetPreferredUniqueNetId(),
 				NAME_GameSession,
@@ -675,13 +583,10 @@ void AMenuSystemCharacter::OnFindSessionsComplete(bool bWasSuccessful)
 				DBG_MSG(FColor::Green, TEXT("[FIND CB] JoinSession() avviato. In attesa del callback OnJoinSessionsComplete..."));
 			}
 
-			// IMPORTANTE: esci dal loop dopo il primo join valido
-			// per non tentare di joinare più sessioni in parallelo
 			break;
 		}
 		else
 		{
-			// MatchType non corrisponde, continua a cercare
 			DBG_MSG(FColor::White, FString::Printf(
 				TEXT("[FIND CB] [%d] Sessione ignorata: MatchType='%s' (atteso 'FreeForAll')"),
 				i, *MatchType
@@ -698,112 +603,165 @@ void AMenuSystemCharacter::OnJoinSessionsComplete(
 	FName SessionName,
 	EOnJoinSessionCompleteResult::Type Result)
 {
-	// Mappa il risultato enum in una stringa leggibile per il debug
 	FString ResultStr;
 	switch (Result)
 	{
-		case EOnJoinSessionCompleteResult::Success:
-			ResultStr = TEXT("Success");
-			break;
-		case EOnJoinSessionCompleteResult::SessionIsFull:
-			ResultStr = TEXT("SessionIsFull");
-			break;
-		case EOnJoinSessionCompleteResult::SessionDoesNotExist:
-			ResultStr = TEXT("SessionDoesNotExist");
-			break;
-		case EOnJoinSessionCompleteResult::CouldNotRetrieveAddress:
-			ResultStr = TEXT("CouldNotRetrieveAddress");
-			break;
-		case EOnJoinSessionCompleteResult::AlreadyInSession:
-			ResultStr = TEXT("AlreadyInSession");
-			break;
+		case EOnJoinSessionCompleteResult::Success:                ResultStr = TEXT("Success");                break;
+		case EOnJoinSessionCompleteResult::SessionIsFull:          ResultStr = TEXT("SessionIsFull");          break;
+		case EOnJoinSessionCompleteResult::SessionDoesNotExist:    ResultStr = TEXT("SessionDoesNotExist");    break;
+		case EOnJoinSessionCompleteResult::CouldNotRetrieveAddress:ResultStr = TEXT("CouldNotRetrieveAddress");break;
+		case EOnJoinSessionCompleteResult::AlreadyInSession:       ResultStr = TEXT("AlreadyInSession");       break;
 		case EOnJoinSessionCompleteResult::UnknownError:
-		default:
-			ResultStr = TEXT("UnknownError");
-			break;
+		default:                                                   ResultStr = TEXT("UnknownError");           break;
 	}
 
 	DBG_MSG(Result == EOnJoinSessionCompleteResult::Success ? FColor::Green : FColor::Red,
 		FString::Printf(TEXT("[JOIN CB] OnJoinSessionsComplete | Sessione: %s | Risultato: %s"),
-		*SessionName.ToString(),
-		*ResultStr
+		*SessionName.ToString(), *ResultStr
 	));
 
 	// ---------------------------------------------------------
-	// BUG FIX #2 (pulizia): ora che abbiamo l'handle salvato,
-	// possiamo rimuovere correttamente il JoinDelegate.
-	// Prima l'handle era vuoto e la Clear non faceva nulla.
+	// BUG FIX #2 (pulizia): handle salvato, Clear funziona ora.
 	// ---------------------------------------------------------
-
 	if (!OnlineSessionInterface.IsValid())
 	{
 		DBG_ERR(TEXT("[JOIN CB] ERRORE: OnlineSessionInterface non valida durante la callback!"));
 		return;
 	}
 
-	// Pulisci il JoinDelegate
 	OnlineSessionInterface->ClearOnJoinSessionCompleteDelegate_Handle(JoinSessionCompleteDelegateHandle);
 	DBG_MSG(FColor::Green, TEXT("[JOIN CB] JoinDelegate pulito."));
 
-	// Gestisci i casi di errore specifici
 	if (Result != EOnJoinSessionCompleteResult::Success)
 	{
 		DBG_ERR(FString::Printf(TEXT("[JOIN CB] ERRORE nel join: %s"), *ResultStr));
 
 		if (Result == EOnJoinSessionCompleteResult::SessionIsFull)
 			{DBG_WARN(TEXT("[JOIN CB] La sessione è piena. Riprova più tardi."));}
-		
 		else if (Result == EOnJoinSessionCompleteResult::SessionDoesNotExist)
-			{DBG_WARN(TEXT("[JOIN CB] La sessione non esiste più. L'host potrebbe aver chiuso la partita."));}
-		
+			{DBG_WARN(TEXT("[JOIN CB] La sessione non esiste più."));}
 		else if (Result == EOnJoinSessionCompleteResult::AlreadyInSession)
 			{DBG_WARN(TEXT("[JOIN CB] Sei già in questa sessione."));}
-		
 		else if (Result == EOnJoinSessionCompleteResult::CouldNotRetrieveAddress)
-			{DBG_WARN(TEXT("[JOIN CB] Impossibile ottenere l'indirizzo del server. Problema di rete o NAT?"));}
+			{DBG_WARN(TEXT("[JOIN CB] Impossibile ottenere l'indirizzo. Controlla bInitServerOnClient=true nel DefaultEngine.ini!"));}
 
 		return;
 	}
 
 	// -------------------------------------------------------
 	// Join riuscito: risolvi l'indirizzo e connettiti al server.
-	//
-	// NOTA CLIENT: in C++ il travel verso il server NON è
-	// automatico come nei Blueprint. Bisogna chiamare
-	// GetResolvedConnectString + ClientTravel manualmente.
-	// Questo è il comportamento standard e corretto in UE5 C++.
+	// In C++ il travel NON è automatico come in Blueprint:
+	// bisogna chiamare GetResolvedConnectString + ClientTravel.
 	// -------------------------------------------------------
 
 	FString Address;
 	if (!OnlineSessionInterface->GetResolvedConnectString(SessionName, Address))
 	{
-		DBG_ERR(TEXT("[JOIN CB] ERRORE: GetResolvedConnectString() fallito! Impossibile ottenere l'IP del server."));
-		DBG_WARN(TEXT("[JOIN CB] Possibili cause: problema Steam relay, NAT traversal fallito, o sessione già chiusa."));
+		DBG_ERR(TEXT("[JOIN CB] ERRORE: GetResolvedConnectString() fallito!"));
+		DBG_WARN(TEXT("[JOIN CB] Controlla che bInitServerOnClient=true sia nel DefaultEngine.ini!"));
 		return;
 	}
 
 	DBG_MSG(FColor::Green, FString::Printf(
-		TEXT("[JOIN CB] Indirizzo server risolto: %s. Avvio ClientTravel..."),
-		*Address
+		TEXT("[JOIN CB] Indirizzo server risolto: %s. Avvio ClientTravel..."), *Address
 	));
 
-	// Recupera il PlayerController per eseguire il travel
 	APlayerController* PC = GetGameInstance()->GetFirstLocalPlayerController();
 
 	if (!PC)
 	{
-		DBG_ERR(TEXT("[JOIN CB] ERRORE: PlayerController non trovato! Impossibile eseguire ClientTravel."));
+		DBG_ERR(TEXT("[JOIN CB] ERRORE: PlayerController non trovato!"));
 		return;
 	}
 
-	// Viaggio verso il server dell'host
-	// TRAVEL_Absolute = indirizzo assoluto (incluso IP Steam relay)
 	PC->ClientTravel(Address, TRAVEL_Absolute);
 
 	DBG_MSG(FColor::Green, FString::Printf(
-		TEXT("[JOIN CB] ClientTravel avviato verso: %s"),
-		*Address
+		TEXT("[JOIN CB] ClientTravel avviato verso: %s"), *Address
 	));
+}
+
+// =========================
+// CALLBACK: INVITO STEAM ACCETTATO
+// =========================
+
+void AMenuSystemCharacter::OnSessionUserInviteAccepted(
+	bool bWasSuccessful,
+	int32 ControllerId,
+	TSharedPtr<const FUniqueNetId> UserId,
+	const FOnlineSessionSearchResult& InviteResult)
+{
+	// ---------------------------------------------------------
+	// BUG FIX #6: gestione degli inviti Steam.
+	//
+	// Chiamata automaticamente da Steam quando l'utente accetta
+	// un invito dall'overlay (Shift+Tab -> Amici -> Unisciti).
+	//
+	// PREREQUISITI OBBLIGATORI nel DefaultEngine.ini:
+	//   [OnlineSubsystemSteam]
+	//   bInitServerOnClient=true   <-- DEVE essere decommentato
+	//
+	// Senza bInitServerOnClient=true:
+	//   - Questo delegate NON viene mai chiamato
+	//   - GetResolvedConnectString() fallisce in OnJoinSessionsComplete
+	//   - La connessione P2P Steam non funziona
+	// ---------------------------------------------------------
+
+	DBG_MSG(bWasSuccessful ? FColor::Green : FColor::Red,
+		FString::Printf(TEXT("[INVITE] OnSessionUserInviteAccepted | Successo: %s | ControllerId: %d"),
+		bWasSuccessful ? TEXT("SI") : TEXT("NO"), ControllerId
+	));
+
+	if (!bWasSuccessful)
+	{
+		DBG_ERR(TEXT("[INVITE] ERRORE: l'invito non è stato accettato correttamente."));
+		return;
+	}
+
+	if (!InviteResult.IsValid())
+	{
+		DBG_ERR(TEXT("[INVITE] ERRORE: il risultato dell'invito non è valido!"));
+		return;
+	}
+
+	if (!OnlineSessionInterface.IsValid())
+	{
+		DBG_ERR(TEXT("[INVITE] ERRORE: OnlineSessionInterface non valida!"));
+		return;
+	}
+
+	if (!UserId.IsValid())
+	{
+		DBG_ERR(TEXT("[INVITE] ERRORE: UserId non valido!"));
+		return;
+	}
+
+	DBG_MSG(FColor::Green, FString::Printf(
+		TEXT("[INVITE] Invito accettato! Host: %s. Avvio JoinSession via invito..."),
+		*InviteResult.Session.OwningUserName
+	));
+
+	// Registra il JoinDelegate e salva l'handle
+	JoinSessionCompleteDelegateHandle =
+		OnlineSessionInterface->AddOnJoinSessionCompleteDelegate_Handle(JoinSessionCompleteDelegate);
+
+	// Avvia il join con il risultato dell'invito (ASYNC)
+	// Il risultato arriverà in OnJoinSessionsComplete -> ClientTravel
+	bool bJoinStarted = OnlineSessionInterface->JoinSession(
+		*UserId,
+		NAME_GameSession,
+		InviteResult
+	);
+
+	if (!bJoinStarted)
+	{
+		DBG_ERR(TEXT("[INVITE] ERRORE: JoinSession() via invito ha ritornato false immediatamente!"));
+		OnlineSessionInterface->ClearOnJoinSessionCompleteDelegate_Handle(JoinSessionCompleteDelegateHandle);
+	}
+	else
+	{
+		DBG_MSG(FColor::Green, TEXT("[INVITE] JoinSession() via invito avviato. In attesa del callback..."));
+	}
 }
 
 // =========================
@@ -812,19 +770,13 @@ void AMenuSystemCharacter::OnJoinSessionsComplete(
 
 void AMenuSystemCharacter::Move(const FInputActionValue& Value)
 {
-	// input is a Vector2D
 	FVector2D MovementVector = Value.Get<FVector2D>();
-
-	// route the input
 	DoMove(MovementVector.X, MovementVector.Y);
 }
 
 void AMenuSystemCharacter::Look(const FInputActionValue& Value)
 {
-	// input is a Vector2D
 	FVector2D LookAxisVector = Value.Get<FVector2D>();
-
-	// route the input
 	DoLook(LookAxisVector.X, LookAxisVector.Y);
 }
 
@@ -832,17 +784,12 @@ void AMenuSystemCharacter::DoMove(float Right, float Forward)
 {
 	if (GetController() != nullptr)
 	{
-		// find out which way is forward
 		const FRotator Rotation = GetController()->GetControlRotation();
 		const FRotator YawRotation(0, Rotation.Yaw, 0);
 
-		// get forward vector
 		const FVector ForwardDirection = FRotationMatrix(YawRotation).GetUnitAxis(EAxis::X);
+		const FVector RightDirection   = FRotationMatrix(YawRotation).GetUnitAxis(EAxis::Y);
 
-		// get right vector 
-		const FVector RightDirection = FRotationMatrix(YawRotation).GetUnitAxis(EAxis::Y);
-
-		// add movement 
 		AddMovementInput(ForwardDirection, Forward);
 		AddMovementInput(RightDirection, Right);
 	}
@@ -852,7 +799,6 @@ void AMenuSystemCharacter::DoLook(float Yaw, float Pitch)
 {
 	if (GetController() != nullptr)
 	{
-		// add yaw and pitch input to controller
 		AddControllerYawInput(Yaw);
 		AddControllerPitchInput(Pitch);
 	}
@@ -860,12 +806,10 @@ void AMenuSystemCharacter::DoLook(float Yaw, float Pitch)
 
 void AMenuSystemCharacter::DoJumpStart()
 {
-	// signal the character to jump
 	Jump();
 }
 
 void AMenuSystemCharacter::DoJumpEnd()
 {
-	// signal the character to stop jumping
 	StopJumping();
 }

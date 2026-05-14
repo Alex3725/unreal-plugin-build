@@ -21,7 +21,7 @@ public class MenuSystem : ModuleRules
 			"Slate",
 			"OnlineSubsystem",
 			"OnlineSubsystemUtils",
-			"OnlineSubsystemUtils",
+			"OnlineSubsystemSteam",
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] { });

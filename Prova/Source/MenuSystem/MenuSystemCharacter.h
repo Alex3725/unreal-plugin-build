@@ -353,6 +353,9 @@ protected:
 	 * @note BUG FIX #2: JoinSessionCompleteDelegateHandle ora viene salvato.
 	 */
 	void OnJoinSessionsComplete(FName SessionName, EOnJoinSessionCompleteResult::Type Result);
+	
+	void OnSessionUserInviteAccepted(bool bWasSuccessful, int32 ControllerId, TSharedPtr<const FUniqueNetId> UserId, const FOnlineSessionSearchResult& InviteResult
+);
 
 private:
 
@@ -375,7 +378,8 @@ private:
 
 	/** Delegate -> OnJoinSessionsComplete. */
 	FOnJoinSessionCompleteDelegate    JoinSessionCompleteDelegate;
-
+	
+	FOnSessionUserInviteAcceptedDelegate  SessionUserInviteAcceptedDelegate;
 	// =======================================================
 	// DELEGATE HANDLES
 	// Conservati per poter rimuovere i delegate con Clear*_Handle().
@@ -391,6 +395,10 @@ private:
 
 	/** @note BUG FIX #2: prima non veniva mai salvato. */
 	FDelegateHandle JoinSessionCompleteDelegateHandle;
+	
+	FDelegateHandle SessionUserInviteAcceptedDelegateHandle;
+	
+	
 
 	// =======================================================
 	// STATO SESSIONE
