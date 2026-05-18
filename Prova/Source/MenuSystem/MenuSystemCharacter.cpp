@@ -393,12 +393,7 @@ void AMenuSystemCharacter::OnCreateSessionComplete(FName SessionName, bool bWasS
 
 			DBG_MSG(FColor::Cyan, TEXT("[CREATE CB] Avvio OpenLevel verso Lobby come listen server..."));
 
-			UGameplayStatics::OpenLevel(
-				this,
-				FName("/Game/ThirdPerson/Maps/Lobby"),
-				true,
-				FString("listen")
-			);
+			GetWorld()->ServerTravel("/Game/ThirdPerson/Maps/Lobby?listen");
 
 			DBG_MSG(FColor::Cyan, TEXT("[CREATE CB] OpenLevel(Lobby, listen) chiamato."));
 		},
